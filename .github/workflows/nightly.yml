@@ -1,0 +1,227 @@
+---
+# SPDX-License-Identifier: MIT
+#
+# Copyright 2026 libnudget. All rights reserved.
+# Use of this source code is governed by a MIT license that can be
+# found in the LICENSE file.
+
+name: Nightly Build
+
+on:
+  workflow_call:
+    inputs:
+      flutter-version:
+        type: string
+        default: '3.41.6'
+      tag-prefix:
+        type: string
+        default: 'desktop/nightly-'
+      app-name:
+        type: string
+        default: 'browser'
+      base-branch:
+        type: string
+        default: 'main'
+    secrets:
+      macos-code-sign-identity:
+        required: false
+      macos-certificate:
+        required: false
+      macos-certificate-password:
+        required: false
+      macos-keychain-password:
+        required: false
+      apple-id:
+        required: false
+      apple-team-id:
+        required: false
+      apple-app-specific-password:
+        required: false
+      macos-app-bundle-id:
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Check if build is needed
+    runs-on: ubuntu-latest
+    outputs:
+      need_build: ${{ steps.check.outputs.need_build }}
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.base-branch }}
+
+      - name: Get latest nightly tag
+        id: latest_tag
+        run: |
+          prefix="${{ inputs.tag-prefix }}"
+          pattern="${prefix}*"
+          tag=$(git tag --list "$pattern" --sort=-creatordate | head -n 1 || echo "")
+          echo "latest=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check for new commits
+        id: check
+        run: |
+          latest="${{ steps.latest_tag.outputs.latest }}"
+          need_build=false
+          if [ -z "$latest" ]; then
+            echo "No previous nightly tag found."
+            need_build=true
+          else
+            base=$(git rev-parse "$latest")
+            head=$(git rev-parse HEAD)
+            if [ "$base" != "$head" ]; then
+              echo "New commits found since $latest"
+              need_build=true
+            else
+              echo "No new commits since $latest"
+            fi
+          fi
+          echo "need_build=$need_build" >> "$GITHUB_OUTPUT"
+
+      - name: Set tag name
+        id: tag
+        if: steps.check.outputs.need_build == 'true'
+        run: |
+          today=$(date -u +"%Y%m%d")
+          tag_name="${{ inputs.tag-prefix }}${today}"
+          echo "tag_name=$tag_name"
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        if: steps.check.outputs.need_build == 'true'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git tag ${{ steps.tag.outputs.tag_name }}
+          git push origin ${{ steps.tag.outputs.tag_name }}
+
+      - name: Skip if no new commits
+        if: steps.check.outputs.need_build == 'false'
+        run: echo "No new commits since last nightly build. Skipping."
+
+  build:
+    name: Build macOS nightly
+    runs-on: macos-latest
+    needs: check
+    if: needs.check.outputs.need_build == 'true'
+    env:
+      MACOS_CODE_SIGN_IDENTITY: ${{ secrets.macos-code-sign-identity }}
+
+    steps:
+      - name: Checkout to the tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.check.outputs.tag_name }}
+          fetch-tags: true
+
+      - uses: ./.github/actions/setup-flutter
+        with:
+          flutter-version: ${{ inputs.flutter-version }}
+
+      - run: flutter pub get
+
+      - name: Create .env file
+        run: |
+          {
+            echo "FIREBASE_API_KEY=dummy_api_key"
+            echo "FIREBASE_APP_ID=dummy_app_id"
+            echo "FIREBASE_MESSAGING_SENDER_ID=dummy_sender_id"
+            echo "FIREBASE_PROJECT_ID=dummy_project_id"
+            echo "FIREBASE_STORAGE_BUCKET=dummy_bucket"
+          } > .env
+
+      - name: Create dummy GoogleService-Info.plist
+        run: |
+          mkdir -p macos/Runner
+          cat << 'EOF' > macos/Runner/GoogleService-Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CLIENT_ID</key><string>dummy</string>
+            <key>REVERSED_CLIENT_ID</key><string>com.google.ReverseClientId</string>
+            <key>API_KEY</key><string>dummy</string>
+            <key>GCM_SENDER_ID</key><string>123456789</string>
+            <key>PLIST_VERSION</key><string>1</string>
+            <key>BUNDLE_ID</key><string>com.example.browser</string>
+            <key>PROJECT_ID</key><string>dummy-project</string>
+            <key>STORAGE_BUCKET</key><string>dummy-project.appspot.com</string>
+            <key>IS_ADS_ENABLED</key><false/>
+            <key>IS_ANALYTICS_ENABLED</key><false/>
+            <key>IS_APPINVITE_ENABLED</key><true/>
+            <key>IS_GCM_ENABLED</key><true/>
+            <key>IS_SIGNIN_ENABLED</key><true/>
+            <key>GOOGLE_APP_ID</key><string>1:123456789:ios:abcdef</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Build generated files
+        run: flutter pub run build_runner build
+
+      - name: Build macOS app
+        env:
+          APP_BUNDLE_ID: ${{ secrets.macos-app-bundle-id }}
+        run: flutter build macos --release 2>&1 | grep -v -E "(firebase_core|firebase_auth|firebase_app_check).*warning"
+
+      - name: Check if certificate is available
+        id: check-cert
+        run: |
+          if [ -n "${{ secrets.macos-certificate }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import signing certificate
+        if: steps.check-cert.outputs.available == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.macos-certificate }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.macos-certificate-password }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.macos-keychain-password }}
+        run: |
+          echo "${MACOS_CERTIFICATE}" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "${MACOS_KEYCHAIN_PASSWORD}" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "${MACOS_KEYCHAIN_PASSWORD}" build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "${MACOS_CERTIFICATE_PASSWORD}" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "${MACOS_KEYCHAIN_PASSWORD}" build.keychain
+
+      - name: Sign, notarize, and create DMG
+        id: dmg
+        env:
+          APPLE_ID: ${{ secrets.apple-id }}
+          APPLE_TEAM_ID: ${{ secrets.apple-team-id }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.apple-app-specific-password }}
+          MACOS_CODE_SIGN_IDENTITY: ${{ secrets.macos-code-sign-identity }}
+          DMG_BACKGROUND_COLOR: '#6b6d70'
+          DMG_LABEL_INDEX: '4'
+          DMG_HEADROOM_MB: '50'
+        run: |
+          chmod +x ./scripts/macos_release_dmg.sh
+          if [ "${{ steps.check-cert.outputs.available }}" == "true" ] && ./scripts/macos_release_dmg.sh; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "Trying unsigned build..."
+            ALLOW_UNSIGNED=1 ./scripts/macos_release_dmg.sh
+            echo "status=unsigned" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/macos/Build/Products/Release/${{ inputs.app-name }}.dmg
+          name: Nightly ${{ needs.check.outputs.tag_name }}
+          tag_name: ${{ needs.check.outputs.tag_name }}
+          prerelease: true
+          generate_release_notes: true
+        continue-on-error: true
