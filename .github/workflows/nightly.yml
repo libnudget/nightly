@@ -39,6 +39,10 @@ on:
         required: false
       macos-app-bundle-id:
         required: false
+      github-app-id:
+        required: false
+      github-app-private-key:
+        required: false
 
 permissions:
   contents: write
@@ -51,11 +55,24 @@ jobs:
       need_build: ${{ steps.check.outputs.need_build }}
       tag_name: ${{ steps.tag.outputs.tag_name }}
     steps:
+      - id: app-token
+        name: Create GitHub app token
+        if: env.GITHUB_APP_ID != '' && env.GITHUB_APP_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v2
+        env:
+          GITHUB_APP_ID: ${{ secrets.github-app-id }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.github-app-private-key }}
+        with:
+          app-id: ${{ secrets.github-app-id }}
+          private-key: ${{ secrets.github-app-private-key }}
+          permission-contents: write
+
       - name: Checkout main branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ inputs.base-branch }}
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
       - name: Get latest nightly tag
         id: latest_tag
@@ -115,12 +132,25 @@ jobs:
       MACOS_CODE_SIGN_IDENTITY: ${{ secrets.macos-code-sign-identity }}
 
     steps:
+      - id: app-token
+        name: Create GitHub app token
+        if: env.GITHUB_APP_ID != '' && env.GITHUB_APP_PRIVATE_KEY != ''
+        uses: actions/create-github-app-token@v2
+        env:
+          GITHUB_APP_ID: ${{ secrets.github-app-id }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.github-app-private-key }}
+        with:
+          app-id: ${{ secrets.github-app-id }}
+          private-key: ${{ secrets.github-app-private-key }}
+          permission-contents: write
+
       - name: Checkout to the tag
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ needs.check.outputs.tag_name }}
           fetch-tags: true
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
       - uses: ./.github/actions/setup-flutter
         with:
@@ -224,4 +254,5 @@ jobs:
           tag_name: ${{ needs.check.outputs.tag_name }}
           prerelease: true
           generate_release_notes: true
+          token: ${{ steps.app-token.outputs.token || github.token }}
         continue-on-error: true
