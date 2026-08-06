@@ -1,5 +1,7 @@
 # nightly
 
+[![Release](https://img.shields.io/github/v/release/libnudget/nightly?logo=github&label=latest)](https://github.com/libnudget/nightly/releases)
+
 Reusable GitHub Action workflow for nightly Flutter desktop builds.
 
 ## What it does
