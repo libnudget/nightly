@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Coccinella-Labs/nightly/main/.github/assets/thumbnail.png" alt="nightly" width="100%">
+</p>
+
 # nightly
 
 [![Release](https://img.shields.io/github/v/release/libnudget/nightly?logo=github&label=latest)](https://github.com/libnudget/nightly/releases)
